@@ -1,0 +1,75 @@
+name: Proposal Check
+
+on:
+  issues:
+    types: [opened]
+
+permissions:
+  contents: read
+  issues: write
+  models: read
+
+jobs:
+  evaluate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install gh-models extension
+        run: gh extension install https://github.com/github/gh-models
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      # check if an existing comment from the bot is present and get the id
+      - name: Find existing bot comment
+        id: find_comment
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const comments = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+            const botComment = comments.data.find(comment => comment.user.type === 'Bot' && comment.body.includes('Thanks!'));
+            return botComment ? botComment.id : null;
+
+      - name: Analyze Issue
+        id: analyze
+        run: |
+          {
+            echo "response<<EOF"
+            gh models run \
+              --file issue-check.prompt.yml \
+              --var title="${{ github.event.issue.title }}" \
+              --var body="${{ github.event.issue.body }}" \
+              --var author="${{ github.event.issue.user.login }}"
+            echo "EOF"
+          } >> $GITHUB_OUTPUT
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+          # create or update comment
+      - name: Comment On Issue
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const commentId = ${{ steps.find_comment.outputs.result }};
+            const commentBody = `${{ steps.analyze.outputs.response }}`;
+
+            if (commentId) {
+              // Update existing comment
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: commentId,
+                body: commentBody
+              });
+            } else {
+              // Create new comment
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body: commentBody
+              });
+            }
